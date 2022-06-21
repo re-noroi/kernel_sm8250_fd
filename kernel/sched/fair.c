@@ -7380,7 +7380,8 @@ static unsigned long cpu_util_next(int cpu, struct task_struct *p, int dst_cpu)
  * task.
  */
 static long
-compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
+compute_energy(struct task_struct *p, int dst_cpu, struct cpumask *cpus,
+	       struct perf_domain *pd)
 {
 	unsigned int max_util, cpu_util, cpu_cap;
 	unsigned long sum_util, energy = 0;
@@ -7388,13 +7389,11 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 	int cpu;
 
 	for (; pd; pd = pd->next) {
-		struct cpumask *pd_mask = perf_domain_span(pd);
-
 		/*
 		 * The energy model mandates all the CPUs of a performance
 		 * domain have the same capacity.
 		 */
-		cpu_cap = arch_scale_cpu_capacity(cpumask_first(pd_mask));
+		cpu_cap = arch_scale_cpu_capacity(cpumask_first(cpus));
 		max_util = sum_util = 0;
 
 		/*
@@ -7407,7 +7406,7 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 		 * it will not appear in its pd list and will not be accounted
 		 * by compute_energy().
 		 */
-		for_each_cpu_and(cpu, pd_mask, cpu_online_mask) {
+		for_each_cpu(cpu, cpus) {
 			unsigned int util_cfs;
 
 			util_cfs = cpu_util_next(cpu, p, dst_cpu);
@@ -7582,7 +7581,9 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 		max_spare_cap_cpu = -1;
 		max_spare_cap = 0;
 
-		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
+		cpumask_and(cpus, perf_domain_span(pd), cpu_online_mask);
+
+		for_each_cpu_and(cpu, cpus, sched_domain_span(sd)) {
 			struct rq *rq = cpu_rq(cpu);
 
 			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
@@ -7702,7 +7703,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	}
 
 	if (cpumask_test_cpu(prev_cpu, &p->cpus_allowed))
-		prev_energy = best_energy = compute_energy(p, prev_cpu, pd);
+		prev_energy = best_energy = compute_energy(p, prev_cpu, candidates, pd);
 	else
 		prev_energy = best_energy = ULONG_MAX;
 
@@ -7710,7 +7711,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	for_each_cpu(cpup, candidates) {
 		if (cpup == prev_cpu)
 			continue;
-		cur_energy = compute_energy(p, cpup, pd);
+		cur_energy = compute_energy(p, cpup, candidates, pd);
 		trace_sched_compute_energy(p, cpup, cur_energy, prev_energy,
 					   best_energy, best_energy_cpu);
 		if (cur_energy < best_energy) {
