@@ -417,7 +417,7 @@ CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 NOSTDINC_FLAGS  =
 CFLAGS_MODULE   =
 AFLAGS_MODULE   =
-LDFLAGS_MODULE  =
+LDFLAGS_MODULE  = --strip-debug
 CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 LDFLAGS_vmlinux = --strip-debug
@@ -688,19 +688,19 @@ KBUILD_CFLAGS   += -Os
 KBUILD_AFLAGS   += -Os
 KBUILD_LDFLAGS  += -Os
 else ifeq ($(cc-name),clang)
-# Enable hot cold split optimization
 KBUILD_CFLAGS   += -mllvm -hot-cold-split=true
-# Enable MLGO optimizations for register allocation
+KBUILD_CFLAGS   += -O3 -march=armv8.2-a+lse+crypto+dotprod -mtune=cortex-a55
+KBUILD_AFLAGS   += -O3 -march=armv8.2-a+lse+crypto+dotprod -mtune=cortex-a55
+# Machine Learning Optimization
 KBUILD_CFLAGS   += -mllvm -regalloc-enable-advisor=release
-KBUILD_CFLAGS   += -O3 -march=armv8.2-a+lse+crypto+dotprod --cuda-path=/dev/null
-KBUILD_AFLAGS   += -O3 -march=armv8.2-a+lse+crypto+dotprod
-KBUILD_LDFLAGS  += -O3 --plugin-opt=O3
 KBUILD_LDFLAGS  += -mllvm -regalloc-enable-advisor=release
 KBUILD_LDFLAGS  += -mllvm -enable-ml-inliner=release
+KBUILD_CFLAGS 	+= -mllvm -inline-threshold=500
+KBUILD_CFLAGS 	+= -mllvm -unroll-threshold=500
 else
-KBUILD_CFLAGS   += -O2
-KBUILD_AFLAGS   += -O2
-KBUILD_LDFLAGS  += -O2
+KBUILD_CFLAGS   += -O3
+KBUILD_AFLAGS   += -O3
+KBUILD_LDFLAGS  += -O3
 
 ifdef CONFIG_INLINE_OPTIMIZATION
 ifdef CONFIG_CC_IS_CLANG
@@ -760,11 +760,14 @@ KBUILD_CFLAGS	+= -mllvm -polly \
 		   -mllvm -polly-ast-use-context \
 		   -mllvm -polly-invariant-load-hoisting \
 		   -mllvm -polly-run-inliner \
-		   -mllvm -polly-vectorizer=stripmine
+		   -mllvm -polly-vectorizer=stripmine \
+		   -mllvm -polly-detect-keep-going
 ifeq ($(shell test $(CONFIG_CLANG_VERSION) -gt 130000; echo $$?),0)
 KBUILD_CFLAGS	+= -mllvm -polly-loopfusion-greedy=1 \
 		   -mllvm -polly-reschedule=1 \
-		   -mllvm -polly-postopts=1
+		   -mllvm -polly-postopts=1 \
+		   -mllvm -polly-num-threads=2 \
+		   -mllvm -polly-scheduling-chunksize=2
 else
 KBUILD_CFLAGS	+= -mllvm -polly-opt-fusion=max
 endif
