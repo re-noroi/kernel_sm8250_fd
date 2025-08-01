@@ -4651,9 +4651,6 @@ static inline void adjust_cpus_for_packing(struct task_struct *p,
 		*target_cpu = -1;
 		return;
 	}
-
-	if (fbt_env->is_rtg)
-		*best_idle_cpu = -1;
 }
 
 static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
@@ -7390,7 +7387,7 @@ struct energy_env {
 
 /*
  * Compute the task busy time for compute_energy(). This time cannot be
- * injected directly into effective_cpu_util() because of the IRQ scaling.
+ * injected directly into schedutil_cpu_util() because of the IRQ scaling.
  * The latter only makes sense with the most recent CPUs where the task has
  * run.
  */
@@ -7439,7 +7436,7 @@ static inline void eenv_pd_busy_time(struct energy_env *eenv,
 	for_each_cpu(cpu, pd_cpus) {
 		unsigned long util = cpu_util_next(cpu, p, -1);
 
-		busy_time += effective_cpu_util(cpu, util, NULL, NULL);
+		busy_time += schedutil_cpu_util(cpu, util, NULL, NULL);
 	}
 	eenv->pd_busy_time = min(eenv->pd_cap, busy_time);
 }
@@ -7460,7 +7457,6 @@ eenv_pd_max_util(struct energy_env *eenv, struct cpumask *pd_cpus,
 	int cpu;
 
 	for_each_cpu(cpu, pd_cpus) {
-		struct task_struct *tsk = (cpu == dst_cpu) ? p : NULL;
 		unsigned long util = cpu_util_next(cpu, p, dst_cpu);
 		unsigned long cpu_util;
 
@@ -7472,7 +7468,7 @@ eenv_pd_max_util(struct energy_env *eenv, struct cpumask *pd_cpus,
 		 * FREQUENCY_UTIL's utilization can be max OPP.
 		 */
 		/* Task's uclamp can modify min and max value */
-		cpu_util = effective_cpu_util(cpu, util, &min, &max);
+		cpu_util = schedutil_cpu_util(cpu, util, &min, &max);
 		if (uclamp_is_used()) {
 			min = max(min, uclamp_eff_value(p, UCLAMP_MIN));
 
@@ -7564,7 +7560,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	unsigned long prev_energy = ULONG_MAX, best_energy = ULONG_MAX;
 	unsigned long p_util_min = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MIN) : 0;
 	unsigned long p_util_max = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MAX) : 1024;
-	bool boosted, latency_sensitive = false;
+	bool boosted = false, latency_sensitive = false;
 	int max_spare_cap_cpu = prev_cpu, best_idle_cpu = -1;
 	int weight, cpup = smp_processor_id(), best_energy_cpu = prev_cpu;
 	unsigned long cur_energy;
@@ -7573,9 +7569,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	struct sched_domain *sd;
 	struct energy_env eenv;
 	cpumask_t *candidates;
-	bool is_rtg, curr_is_rtg;
-	bool need_idle = wake_to_idle(p);
-	int placement_boost = task_boost_policy(p);
 	u64 start_t = 0;
 	int delta = 0, cpu, start_cpu = get_start_cpu(p, sync_boost);
 	unsigned long target_cap;
@@ -7584,9 +7577,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	
 	if (start_cpu < 0)
 		goto eas_not_ready;
-
-	is_rtg = task_in_related_thread_group(p);
-	curr_is_rtg = task_in_related_thread_group(cpu_rq(cpu)->curr);
 
 	if (trace_sched_task_util_enabled())
 		start_t = sched_clock();
@@ -7635,7 +7625,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 
 		max_spare_cap_cpu = -1;
 
-		cpumask_and(cpus, perf_domain_span(pd), cpu_online_mask);
+		cpumask_and(candidates, perf_domain_span(pd), cpu_online_mask);
 
 		if (cpumask_empty(candidates))
 			continue;
@@ -7667,7 +7657,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 			 * IOW, placing the task there would make the CPU
 			 * overutilized. Take uclamp into account to see how
 			 * much capacity we can get out of the CPU; this is
-			 * aligned with effective_cpu_util().
+			 * aligned with schedutil_cpu_util().
 			 */
  
 
@@ -7802,7 +7792,7 @@ unlock:
 done:
 
 	trace_sched_task_util(p, cpumask_bits(candidates)[0], best_energy_cpu,
-			sync, start_t, boosted, get_rtg_status(p), start_cpu);
+			sync, start_t, boosted, start_cpu);
 
 	return best_energy_cpu;
 

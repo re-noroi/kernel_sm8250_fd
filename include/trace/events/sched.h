@@ -1096,12 +1096,10 @@ TRACE_EVENT(sched_task_util,
 	TP_PROTO(struct task_struct *p, unsigned long candidates,
 		int best_energy_cpu, bool sync,
 		bool placement_boost, u64 start_t,
-		bool is_rtg, bool rtg_skip_min,
 		int start_cpu),
 
 	TP_ARGS(p, candidates, best_energy_cpu, sync,
-		placement_boost, start_t, is_rtg, rtg_skip_min,
-		start_cpu),
+		placement_boost, start_t, start_cpu),
 
 	TP_STRUCT__entry(
 		__field(int,		pid)
@@ -1114,8 +1112,6 @@ TRACE_EVENT(sched_task_util,
 		__field(int,		placement_boost)
 		__field(int,		rtg_cpu)
 		__field(u64,		latency)
-		__field(bool,		is_rtg)
-		__field(bool,		rtg_skip_min)
 		__field(int,		start_cpu)
 		__field(u32,		unfilter)
 		__field(unsigned long,  cpus_allowed)
@@ -1132,20 +1128,17 @@ TRACE_EVENT(sched_task_util,
 		__entry->sync                   = sync;
 		__entry->placement_boost        = placement_boost;
 		__entry->latency                = (sched_clock() - start_t);
-		__entry->is_rtg                 = is_rtg;
-		__entry->rtg_skip_min		= rtg_skip_min;
 		__entry->start_cpu		= start_cpu;
 		__entry->unfilter		= 0;
 		__entry->low_latency		= 0;
 		__entry->cpus_allowed           = cpumask_bits(&p->cpus_allowed)[0];
 	),
 
-	TP_printk("pid=%d comm=%s util=%lu prev_cpu=%d candidates=%#lx best_energy_cpu=%d sync=%d need_idle=%d fastpath=%d placement_boost=%d latency=%llu is_rtg=%d rtg_skip_min=%d start_cpu=%d unfilter=%u affine=%#lx low_latency=%d",
+	TP_printk("pid=%d comm=%s util=%lu prev_cpu=%d candidates=%#lx best_energy_cpu=%d sync=%d need_idle=%d fastpath=%d placement_boost=%d latency=%llu start_cpu=%d unfilter=%u affine=%#lx low_latency=%d",
 		__entry->pid, __entry->comm, __entry->util, __entry->prev_cpu,
 		__entry->candidates, __entry->best_energy_cpu, __entry->sync,
 		__entry->need_idle, __entry->fastpath, __entry->placement_boost,
-		__entry->latency, __entry->is_rtg,
-		__entry->rtg_skip_min, __entry->start_cpu,
+		__entry->latency, __entry->start_cpu,
 		__entry->unfilter, __entry->cpus_allowed, __entry->low_latency)
 );
 
