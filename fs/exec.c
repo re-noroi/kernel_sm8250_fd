@@ -116,7 +116,8 @@ static DEFINE_RWLOCK(binfmt_lock);
 
 #define SURFACEFLINGER_BIN "/system/bin/surfaceflinger"
 #define SYSTEMUI_BIN "/system_ext/priv-app/MiuiSystemUI/MiuiSystemUI.apk"
-#define MIUIHOME_BIN "product/priv-app/MiuiHome/MiuiHome.apk"
+#define UIPLUGIN_BIN "/product/app/MIUISystemUIPlugin/MIUISystemUIPlugin.apk"
+#define MIUIHOME_BIN "/product/priv-app/MiuiHome/MiuiHome.apk"
 #define ZYGOTE32_BIN "/system/bin/app_process32"
 #define ZYGOTE64_BIN "/system/bin/app_process64"
 static struct signal_struct *zygote32_sig;
@@ -1948,11 +1949,16 @@ static int __do_execve_file(int fd, struct filename *filename,
 					   strlen(MIUIHOME_BIN)))) {
 			current->flags |= PF_PERF_CRITICAL;
 			set_cpus_allowed_ptr(current, cpu_hp_mask);
-                } else if (unlikely(!strncmp(filename->name,
-                                           SURFACEFLINGER_BIN,
-                                           strlen(SURFACEFLINGER_BIN)))) {
-                        current->flags |= PF_PERF_CRITICAL;
-                        set_cpus_allowed_ptr(current, cpu_hp_mask);
+		} else if (unlikely(!strncmp(filename->name,
+					   UIPLUGIN_BIN,
+					   strlen(UIPLUGIN_BIN)))) {
+			current->flags |= PF_PERF_CRITICAL;
+			set_cpus_allowed_ptr(current, cpu_hp_mask);
+		} else if (unlikely(!strncmp(filename->name,
+					   SURFACEFLINGER_BIN,
+					   strlen(SURFACEFLINGER_BIN)))) {
+            current->flags |= PF_PERF_CRITICAL;
+            set_cpus_allowed_ptr(current, cpu_hp_mask);
 		}
 	}
 
