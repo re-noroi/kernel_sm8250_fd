@@ -26,7 +26,6 @@
 #include <trace/events/sched.h>
 
 #ifdef CONFIG_SMP
-static inline unsigned long boosted_task_util(struct task_struct *task);
 #endif /* CONFIG_SMP */
 
 /*
