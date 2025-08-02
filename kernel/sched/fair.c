@@ -7495,18 +7495,6 @@ compute_energy(struct energy_env *eenv, struct perf_domain *pd,
 	return em_pd_energy(pd->em_pd, max_util, busy_time);
 }
 
-/* return true if cpu should be chosen over best_energy_cpu */
-static inline bool select_cpu_same_energy(int cpu, int best_cpu, int prev_cpu)
-{
-	if (best_cpu == prev_cpu)
-		return false;
-	/*
-	 * If we are this far this must be a tie between a busy and deep idle,
-	 * pick the busy.
-	 */
-	return idle_cpu(best_cpu);
-}
-
 /*
  * find_energy_efficient_cpu(): Find most energy-efficient target CPU for the
  * waking task. find_energy_efficient_cpu() looks for the CPU with maximum
