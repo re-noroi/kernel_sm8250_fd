@@ -7305,11 +7305,6 @@ unsigned long capacity_curr_of(int cpu)
 	return cap_scale(max_cap, scale_freq);
 }
 
-static inline bool get_rtg_status(struct task_struct *p)
-{
-	return false;
-}
-
 enum fastpaths {
 	NONE = 0,
 	SYNC_WAKEUP,
