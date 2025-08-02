@@ -7310,11 +7310,6 @@ static inline bool get_rtg_status(struct task_struct *p)
 	return false;
 }
 
-static inline bool task_skip_min_cpu(struct task_struct *p)
-{
-	return false;
-}
-
 enum fastpaths {
 	NONE = 0,
 	SYNC_WAKEUP,
