@@ -7315,11 +7315,6 @@ static inline bool task_skip_min_cpu(struct task_struct *p)
 	return false;
 }
 
-static inline bool is_many_wakeup(int sibling_count_hint)
-{
-	return false;
-}
-
 enum fastpaths {
 	NONE = 0,
 	SYNC_WAKEUP,
