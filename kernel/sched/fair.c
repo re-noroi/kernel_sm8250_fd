@@ -7320,11 +7320,6 @@ static inline bool is_many_wakeup(int sibling_count_hint)
 	return false;
 }
 
-static int get_start_cpu(struct task_struct *p, bool sync_boost)
-{
-	return smp_processor_id();
-}
-
 enum fastpaths {
 	NONE = 0,
 	SYNC_WAKEUP,
@@ -7512,8 +7507,6 @@ static inline bool select_cpu_same_energy(int cpu, int best_cpu, int prev_cpu)
 	return idle_cpu(best_cpu);
 }
 
-static DEFINE_PER_CPU(cpumask_t, energy_cpus);
-
 /*
  * find_energy_efficient_cpu(): Find most energy-efficient target CPU for the
  * waking task. find_energy_efficient_cpu() looks for the CPU with maximum
@@ -7554,47 +7547,33 @@ static DEFINE_PER_CPU(cpumask_t, energy_cpus);
  * let's keep things simple by re-using the existing slow path.
  */
 
-static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
-                                     int sync, bool sync_boost)
+static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sync)
 {
-	unsigned long prev_energy = ULONG_MAX, best_energy = ULONG_MAX;
+	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
+	unsigned long prev_delta = ULONG_MAX, best_delta = ULONG_MAX;
 	unsigned long p_util_min = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MIN) : 0;
 	unsigned long p_util_max = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MAX) : 1024;
-	bool boosted = false, latency_sensitive = false;
-	int max_spare_cap_cpu = prev_cpu, best_idle_cpu = -1;
-	int weight, cpup = smp_processor_id(), best_energy_cpu = prev_cpu;
-	unsigned long cur_energy;
 	struct root_domain *rd = this_rq()->rd;
-	struct perf_domain *pd;
+	int cpu, best_energy_cpu, target = -1;
+	int prev_fits = -1, best_fits = -1;
+	unsigned long best_thermal_cap = 0;
+	unsigned long prev_thermal_cap = 0;
 	struct sched_domain *sd;
+	struct perf_domain *pd;
 	struct energy_env eenv;
-	cpumask_t *candidates;
-	u64 start_t = 0;
-	int delta = 0, cpu, start_cpu = get_start_cpu(p, sync_boost);
-	unsigned long target_cap;
-	unsigned int min_exit_lat = UINT_MAX;
-	struct cpuidle_state *idle;
-	
-	if (start_cpu < 0)
-		goto eas_not_ready;
-
-	if (trace_sched_task_util_enabled())
-		start_t = sched_clock();
-
-	/* Pre-select a set of candidate CPUs. */
-	candidates = this_cpu_ptr(&energy_cpus);
-	cpumask_clear(candidates);
-
-	if (sysctl_sched_sync_hint_enable && sync &&
-				bias_to_this_cpu(p, cpup, start_cpu)) {
-		best_energy_cpu = cpup;
-		goto done;
-	}
 
 	rcu_read_lock();
 	pd = rcu_dereference(rd->pd);
 	if (!pd || READ_ONCE(rd->overutilized))
-		goto fail;
+		goto unlock;
+
+	cpu = smp_processor_id();
+	if (sync && cpu_rq(cpu)->nr_running == 1 &&
+	    cpumask_test_cpu(cpu, &p->cpus_allowed) &&
+	    task_fits_cpu(p, cpu)) {
+		rcu_read_unlock();
+		return cpu;
+	}
 
 	/*
 	 * Energy-aware wake-up happens on the lowest sched_domain starting
@@ -7604,41 +7583,39 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	while (sd && !cpumask_test_cpu(prev_cpu, sched_domain_span(sd)))
 		sd = sd->parent;
 	if (!sd)
-		goto fail;
+		goto unlock;
+
+	target = prev_cpu;
 
 	sync_entity_load_avg(&p->se);
-
 	if (!task_util_est(p) && p_util_min == 0)
 		goto unlock;
 
 	eenv_task_busy_time(&eenv, p, prev_cpu);
 
-	latency_sensitive = uclamp_latency_sensitive(p);
-	boosted = uclamp_boosted(p);
-	target_cap = boosted ? 0 : ULONG_MAX;
-
 	for (; pd; pd = pd->next) {
-		unsigned long cpu_cap, cpu_thermal_cap, util;
-		unsigned long max_spare_cap = 0;
 		unsigned long util_min = p_util_min, util_max = p_util_max;
+		unsigned long cpu_cap, cpu_thermal_cap, util;
+		long prev_spare_cap = -1, max_spare_cap = -1;
 		unsigned long rq_util_min, rq_util_max;
+		unsigned long cur_delta, base_energy;
+		int max_spare_cap_cpu = -1;
+		int fits, max_fits = -1;
 
-		max_spare_cap_cpu = -1;
+		cpumask_and(cpus, perf_domain_span(pd), cpu_online_mask);
 
-		cpumask_and(candidates, perf_domain_span(pd), cpu_online_mask);
-
-		if (cpumask_empty(candidates))
+		if (cpumask_empty(cpus))
 			continue;
 
 		/* Account thermal pressure for the energy estimation */
-		cpu = cpumask_first(candidates);
+		cpu = cpumask_first(cpus);
 		cpu_thermal_cap = arch_scale_cpu_capacity(cpu);
 		cpu_thermal_cap -= arch_scale_thermal_pressure(cpu);
 
 		eenv.cpu_cap = cpu_thermal_cap;
 		eenv.pd_cap = 0;
 
-		for_each_cpu(cpu, candidates) {
+		for_each_cpu(cpu, cpus) {
 			struct rq *rq = cpu_rq(cpu);
 
 			eenv.pd_cap += cpu_thermal_cap;
@@ -7649,18 +7626,16 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 			if (!cpumask_test_cpu(cpu, &p->cpus_allowed))
 				continue;
 
-			util = cpu_util_next(cpu, p, cpu);
+			util = cpu_util(cpu);
 			cpu_cap = capacity_of(cpu);
 
 			/*
-			 * Skip candidates that cannot satisfy the capacity request.
+			 * Skip CPUs that cannot satisfy the capacity request.
 			 * IOW, placing the task there would make the CPU
 			 * overutilized. Take uclamp into account to see how
 			 * much capacity we can get out of the CPU; this is
-			 * aligned with schedutil_cpu_util().
+			 * aligned with sched_cpu_util().
 			 */
- 
-
 			if (uclamp_is_used() && !uclamp_rq_is_idle(rq)) {
 				/*
 				 * Open code uclamp_rq_util_with() except for
@@ -7676,130 +7651,96 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 				util_max = max(rq_util_max, p_util_max);
 			}
 
-			if (!util_fits_cpu(util, util_min, util_max, cpu))
+			fits = util_fits_cpu(util, util_min, util_max, cpu);
+			if (!fits)
 				continue;
 
 			lsub_positive(&cpu_cap, util);
 
-			if (!latency_sensitive)
-				continue;
-
-			if (idle_cpu(cpu)) {
-				cpu_cap = capacity_orig_of(cpu);
-				if (boosted && cpu_cap < target_cap)
-					continue;
-				if (!boosted && cpu_cap > target_cap)
-					continue;
-				idle = idle_get_state(cpu_rq(cpu));
-				if (idle && idle->exit_latency > min_exit_lat &&
-						cpu_cap == target_cap)
-					continue;
-
-				if (idle)
-					min_exit_lat = idle->exit_latency;
-				target_cap = cpu_cap;
-				best_idle_cpu = cpu;
-			} else if (cpu_cap > max_spare_cap) {
+			if (cpu == prev_cpu) {
+				/* Always use prev_cpu as a candidate. */
+				prev_spare_cap = cpu_cap;
+				prev_fits = fits;
+			} else if ((fits > max_fits) ||
+				   ((fits == max_fits) && ((long)cpu_cap > max_spare_cap))) {
+				/*
+				 * Find the CPU with the maximum spare capacity
+				 * among the remaining CPUs in the performance
+				 * domain.
+				 */
 				max_spare_cap = cpu_cap;
 				max_spare_cap_cpu = cpu;
+				max_fits = fits;
 			}
 		}
 
-		if (!latency_sensitive && max_spare_cap_cpu >= 0)
-			cpumask_set_cpu(max_spare_cap_cpu, candidates);
-	}
-
-	if (latency_sensitive) {
-		if (best_idle_cpu >= 0)
-			cpumask_set_cpu(best_idle_cpu, candidates);
-		else
-			cpumask_set_cpu(max_spare_cap_cpu, candidates);
-	}
-
-	/* Bail out if no candidate was found. */
-	weight = cpumask_weight(candidates);
-	if (!weight) {
-		/*
-		 * Don't overload the previous CPU if it had already
-		 * more runnable tasks. Fallback to a CPU with lower
-		 * number of tasks.
-		 */
-		if (cpu_rq(prev_cpu)->nr_running > 32) {
-			int i;
-			unsigned int best_nr = UINT_MAX;
-
-			for_each_cpu(i, cpu_active_mask) {
-				if (!cpumask_test_cpu(i, &p->cpus_allowed))
-					continue;
-				if (cpu_rq(i)->nr_running < best_nr) {
-					best_nr = cpu_rq(i)->nr_running;
-					best_energy_cpu = i;
-				}
-			}
-		}
-		goto unlock;
-	}
-
-	/* If there is only one sensible candidate, select it now. */
-	cpup = cpumask_first(candidates);
-	if (weight == 1 && ((uclamp_latency_sensitive(p) && idle_cpu(cpup)) ||
-			    (cpup == prev_cpu))) {
-		best_energy_cpu = cpup;
-		goto unlock;
-	}
-
-	if (boosted || per_task_boost(p) > 0 || __cpu_overutilized(prev_cpu, delta) ||
-            !task_fits_max(p, prev_cpu)) {
-		best_energy_cpu = cpup;
-		goto unlock;
-	}
-
-	if (cpumask_test_cpu(prev_cpu, &p->cpus_allowed))
-		prev_energy = best_energy = compute_energy(&eenv, pd, candidates, p, cpup);
-	else
-		prev_energy = best_energy = ULONG_MAX;
-
-	/* Select the best candidate energy-wise. */
-	for_each_cpu(cpup, candidates) {
-		if (cpup == prev_cpu)
+		if (max_spare_cap_cpu < 0 && prev_spare_cap < 0)
 			continue;
-		cur_energy = compute_energy(&eenv, pd, candidates, p, cpup);
-		trace_sched_compute_energy(p, cpup, cur_energy, prev_energy,
-					   best_energy, best_energy_cpu);
-		if (cur_energy < best_energy) {
-			best_energy = cur_energy;
-			best_energy_cpu = cpup;
-		} else if (cur_energy == best_energy) {
-			if (select_cpu_same_energy(cpup, best_energy_cpu,
-						prev_cpu)) {
-				best_energy = cur_energy;
-				best_energy_cpu = cpup;
-			}
+
+		eenv_pd_busy_time(&eenv, cpus, p);
+		/* Compute the 'base' energy of the pd, without @p */
+		base_energy = compute_energy(&eenv, pd, cpus, p, -1);
+
+		/* Evaluate the energy impact of using prev_cpu. */
+		if (prev_spare_cap > -1) {
+			prev_delta = compute_energy(&eenv, pd, cpus, p,
+						    prev_cpu);
+			/* CPU utilization has changed */
+			if (prev_delta < base_energy)
+				goto unlock;
+			prev_delta -= base_energy;
+			prev_thermal_cap = cpu_thermal_cap;
+			best_delta = min(best_delta, prev_delta);
+		}
+
+		/* Evaluate the energy impact of using max_spare_cap_cpu. */
+		if (max_spare_cap_cpu >= 0 && max_spare_cap > prev_spare_cap) {
+			/* Current best energy cpu fits better */
+			if (max_fits < best_fits)
+				continue;
+
+			/*
+			 * Both don't fit performance hint (i.e. uclamp_min)
+			 * but best energy cpu has better capacity.
+			 */
+			if ((max_fits < 0) &&
+			    (cpu_thermal_cap <= best_thermal_cap))
+				continue;
+
+			cur_delta = compute_energy(&eenv, pd, cpus, p,
+						   max_spare_cap_cpu);
+			/* CPU utilization has changed */
+			if (cur_delta < base_energy)
+				goto unlock;
+			cur_delta -= base_energy;
+
+			/*
+			 * Both fit for the task but best energy cpu has lower
+			 * energy impact.
+			 */
+			if ((max_fits > 0) && (best_fits > 0) &&
+			    (cur_delta >= best_delta))
+				continue;
+
+			best_delta = cur_delta;
+			best_energy_cpu = max_spare_cap_cpu;
+			best_fits = max_fits;
+			best_thermal_cap = cpu_thermal_cap;
 		}
 	}
+	rcu_read_unlock();
+
+	if ((best_delta < prev_delta) ||
+	    ((best_fits > 0) && (best_delta < prev_delta)) ||
+	    ((best_fits < 0) && (best_thermal_cap > prev_thermal_cap)))
+		target = best_energy_cpu;
+
+	return target;
+
 unlock:
-	/*
-	 * Pick the prev CPU, if best energy CPU can't saves at least 6% of
-	 * the energy used by prev_cpu.
-	 */
-	if (!(idle_cpu(best_energy_cpu)) &&
-	    (prev_energy != ULONG_MAX) && (best_energy_cpu != prev_cpu) &&
-	    ((prev_energy - best_energy) <= prev_energy >> 4))
-		best_energy_cpu = prev_cpu;
-
 	rcu_read_unlock();
 
-done:
-
-	trace_sched_task_util(p, cpumask_bits(candidates)[0], best_energy_cpu,
-			sync, start_t, boosted, start_cpu);
-
-	return best_energy_cpu;
-
-fail:
-	rcu_read_unlock();
-eas_not_ready:
-	return -1;
+	return target;
 }
 
 /*
@@ -7829,7 +7770,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 		record_wakee(p);
 
                 if (sched_energy_enabled()) {
-			new_cpu = find_energy_efficient_cpu(p, prev_cpu, sync, 1);
+			new_cpu = find_energy_efficient_cpu(p, prev_cpu, sync);
 			if (new_cpu >= 0)
 				return new_cpu;
 			new_cpu = prev_cpu;
